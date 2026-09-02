@@ -200,6 +200,61 @@ Supabase
 
 ---
 
+###AI Provider
+
+Gemini API is the AI provider for the RecoverAI MVP.
+
+Gemini is accessed exclusively from server-side Supabase Edge Functions.
+
+The Gemini API key must never be exposed to the frontend.
+
+## Gemini Responsibilities
+
+Gemini is responsible for:
+
+* Revenue analysis.
+* Payment failure diagnosis.
+* Recovery probability estimation.
+* Recovery action recommendation.
+* Natural-language explanations.
+* Agent tool selection where applicable.
+
+## Gemini Restrictions
+
+Gemini does NOT directly:
+
+* Access PostgreSQL.
+* Execute arbitrary SQL.
+* Call Razorpay directly.
+* Modify recovery state.
+* Approve its own recommendations.
+* Bypass backend safety rules.
+
+## Server-Side Responsibility
+
+All database access, recovery execution, authorization, and safety validation are handled by server-side application logic.
+
+The relationship is:
+
+```text
+Frontend
+    ↓
+Supabase Edge Function
+    ↓
+Gemini API
+    ↓
+Structured AI Response
+    ↓
+Backend Validation
+    ↓
+Supabase Database / Recovery Tools
+```
+
+Gemini provides intelligence and recommendations.
+
+The application backend remains authoritative over data, permissions, state changes, and payment operations.
+
+
 # 5. Authentication
 
 Supabase Auth will manage merchant authentication.
