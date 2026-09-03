@@ -6,9 +6,11 @@ import {
   useMemo,
   useState,
   type ReactNode,
+  type FormEvent,
 } from "react";
 
 import { supabase } from "./supabase";
+import { ArrowRight, Loader2, LogIn, Zap } from "lucide-react";
 
 import type {
   AuditEvent,
@@ -51,6 +53,12 @@ interface RecoverContextValue {
   rejectRecovery: (opportunityId: string) => void;
   executeRecovery: (opportunityId: string) => void;
   verifyRecovery: (opportunityId: string) => void;
+  sendRecoveryMessage: (opportunityId: string) => void;
+
+  authenticated: boolean;
+  authLoading: boolean;
+  signIn: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
 
   resetDemo: () => void;
   answerAgentQuestion: (question: string) => string;
@@ -67,12 +75,8 @@ const RecoverContext = createContext<
   RecoverContextValue | undefined
 >(undefined);
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_KEY =
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
 async function getAuthenticatedSession() {
-  let {
+  const {
     data: { session },
     error,
   } = await supabase.auth.getSession();
@@ -81,31 +85,8 @@ async function getAuthenticatedSession() {
     throw error;
   }
 
-  /*
-   * Demo mode:
-   * Automatically sign into the demo merchant when no
-   * Supabase session exists.
-   */
-  if (!session) {
-    const { data, error: loginError } =
-      await supabase.auth.signInWithPassword({
-        email: "demo@recoverai.dev",
-        password: "RecoverAI@2026!",
-      });
-
-    if (loginError) {
-      throw new Error(
-        `Demo login failed: ${loginError.message}`,
-      );
-    }
-
-    session = data.session;
-  }
-
   if (!session?.access_token) {
-    throw new Error(
-      "Unable to obtain Supabase access token.",
-    );
+    throw new Error("AUTH_REQUIRED");
   }
 
   return session;
@@ -367,6 +348,15 @@ export function RecoverProvider({
   const [error, setError] =
     useState<string | null>(null);
 
+  const [session, setSession] =
+    useState<any>(null);
+
+  const [authLoading, setAuthLoading] =
+    useState(true);
+
+  const [authError, setAuthError] =
+    useState<string | null>(null);
+
   const customerOf = useCallback(
     (customerId: string) => {
       return customers.find(
@@ -503,9 +493,23 @@ export function RecoverProvider({
           mapOpportunity,
         );
 
-      setOpportunities(
-        mappedOpportunities,
-      );
+      // Keep opportunities that are already open in a detail view even if
+      // the dashboard response temporarily omits them. This prevents a
+      // detail page from disappearing during background refreshes.
+      setOpportunities((current) => {
+        const incomingIds = new Set(
+          mappedOpportunities.map((item) => item.id),
+        );
+
+        const preserved = current.filter(
+          (item) => !incomingIds.has(item.id),
+        );
+
+        return [
+          ...mappedOpportunities,
+          ...preserved,
+        ];
+      });
 
       /*
        * Build customers directly from the
@@ -596,8 +600,95 @@ export function RecoverProvider({
   }, [loadActionsAndAudit]);
 
   useEffect(() => {
-    loadDashboard();
-  }, [loadDashboard]);
+    let mounted = true;
+
+    const loadSession = async () => {
+      const {
+        data: { session: currentSession },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (!mounted) return;
+
+      if (sessionError) {
+        setAuthError(sessionError.message);
+      }
+
+      setSession(currentSession);
+      setAuthLoading(false);
+    };
+
+    void loadSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, nextSession) => {
+        if (!mounted) return;
+
+        setSession(nextSession);
+        setAuthLoading(false);
+        setAuthError(null);
+
+        if (!nextSession) {
+          setMerchant(fallbackMerchant);
+          setCustomers([]);
+          setOpportunities([]);
+          setActions([]);
+          setAudit([]);
+          setMetrics({
+            totalRevenue: 0,
+            revenueAtRisk: 0,
+            recoveredRevenue: 0,
+            recoveredCount: 0,
+            openCount: 0,
+            recoveryRate: 0,
+          });
+          setLoading(false);
+        }
+      },
+    );
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (session) {
+      void loadDashboard();
+    }
+  }, [session, loadDashboard]);
+
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      setAuthError(null);
+
+      const {
+        error: loginError,
+      } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+
+      if (loginError) {
+        setAuthError(loginError.message);
+        throw loginError;
+      }
+    },
+    [],
+  );
+
+  const signOut = useCallback(async () => {
+    const { error: signOutError } =
+      await supabase.auth.signOut();
+
+    if (signOutError) {
+      setAuthError(signOutError.message);
+      throw signOutError;
+    }
+  }, []);
 
   /*
    * APPROVE
@@ -990,6 +1081,21 @@ export function RecoverProvider({
           actionData.execution_mode === "RAZORPAY_TEST" &&
           actionData.action_type === "CREATE_PAYMENT_LINK"
         ) {
+          /*
+           * Persist EXECUTING before creating the external Payment Link.
+           * Previously this state existed only in React, so any dashboard
+           * refresh read APPROVED from Supabase and restarted execution.
+           */
+          const { error: executingStatusError } =
+            await supabase
+              .from("opportunities")
+              .update({ status: "EXECUTING" })
+              .eq("id", opportunityId);
+
+          if (executingStatusError) {
+            throw executingStatusError;
+          }
+
           const {
             data: functionData,
             error: functionError,
@@ -1084,6 +1190,20 @@ export function RecoverProvider({
         );
 
         /*
+         * Roll the persisted execution state back if external execution
+         * failed before a payment link was created.
+         */
+        if (
+          actionData?.execution_mode === "RAZORPAY_TEST" &&
+          actionData?.action_type === "CREATE_PAYMENT_LINK"
+        ) {
+          await supabase
+            .from("opportunities")
+            .update({ status: "APPROVED" })
+            .eq("id", opportunityId);
+        }
+
+        /*
          * Roll the optimistic state back.
          */
         setOpportunities((current) =>
@@ -1105,6 +1225,152 @@ export function RecoverProvider({
       loadActionsAndAudit,
     ],
   );
+  /*
+   * SEND RECOVERY MESSAGE
+   *
+   * This is an intentionally safe demo execution. It does not
+   * contact an external messaging provider or move money.
+   * The action is persisted and audited so the merchant can see
+   * exactly what RecoverAI would have executed.
+   */
+  const sendRecoveryMessage = useCallback(
+    async (opportunityId: string) => {
+      const opportunity = opportunities.find(
+        (item) => item.id === opportunityId,
+      );
+
+      if (!opportunity) return;
+
+      const customer = customerOf(
+        opportunity.customerId,
+      );
+
+      setError(null);
+
+      try {
+        let {
+          data: actionData,
+          error: actionLoadError,
+        } = await supabase
+          .from("recovery_actions")
+          .select("*")
+          .eq("opportunity_id", opportunityId)
+          .eq("action_type", "SEND_RECOVERY_MESSAGE")
+          .order("created_at", {
+            ascending: false,
+          })
+          .limit(1)
+          .maybeSingle();
+
+        if (actionLoadError) {
+          throw actionLoadError;
+        }
+
+        if (!actionData) {
+          const {
+            data: createdAction,
+            error: createActionError,
+          } = await supabase
+            .from("recovery_actions")
+            .insert({
+              opportunity_id: opportunity.id,
+              merchant_id: merchant.id,
+              action_type: "SEND_RECOVERY_MESSAGE",
+              amount: opportunity.amount,
+              currency: merchant.currency,
+              status: "APPROVED",
+              execution_mode: "SIMULATION",
+              approved_at:
+                new Date().toISOString(),
+              result_message:
+                "Recovery message approved by merchant",
+            })
+            .select()
+            .single();
+
+          if (createActionError) {
+            throw createActionError;
+          }
+
+          actionData = createdAction;
+        }
+
+        if (
+          actionData.status === "COMPLETED" ||
+          actionData.status === "VERIFIED"
+        ) {
+          await loadActionsAndAudit(opportunities);
+          return;
+        }
+
+        const {
+          error: actionUpdateError,
+        } = await supabase
+          .from("recovery_actions")
+          .update({
+            status: "COMPLETED",
+            executed_at:
+              new Date().toISOString(),
+            result_message:
+              `Recovery message sent to ${
+                customer?.name ?? "customer"
+              } via RecoverAI demo channel`,
+          })
+          .eq("id", actionData.id);
+
+        if (actionUpdateError) {
+          throw actionUpdateError;
+        }
+
+        const {
+          error: auditError,
+        } = await supabase
+          .from("audit_logs")
+          .insert({
+            merchant_id: merchant.id,
+            opportunity_id: opportunity.id,
+            recovery_action_id: actionData.id,
+            event_type:
+              "RECOVERY_MESSAGE_SENT",
+            message:
+              "Recovery message sent successfully in simulation mode.",
+            metadata: {
+              actor: "RECOVERAI",
+              customer_name:
+                customer?.name ?? "Customer",
+              action:
+                "SEND_RECOVERY_MESSAGE",
+              result:
+                "Recovery message sent via RecoverAI demo channel",
+            },
+          });
+
+        if (auditError) {
+          throw auditError;
+        }
+
+        await loadActionsAndAudit(opportunities);
+      } catch (err) {
+        console.error(
+          "RecoverAI message execution error:",
+          err,
+        );
+
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to send recovery message.",
+        );
+      }
+    },
+    [
+      opportunities,
+      merchant,
+      customerOf,
+      loadActionsAndAudit,
+    ],
+  );
+
   /*
    * VERIFY
    *
@@ -1209,18 +1475,54 @@ export function RecoverProvider({
           /*
            * Genuine Razorpay recovery.
            */
+          // Update the detail view immediately, then refresh the complete
+          // dashboard for metrics and customer history.
           setOpportunities((current) =>
             current.map((item) =>
               item.id === opportunityId
-                ? {
-                    ...item,
-                    status: "RECOVERED",
-                  }
+                ? { ...item, status: "RECOVERED" }
                 : item,
             ),
           );
 
-          await loadActionsAndAudit(opportunities);
+          // Refresh this customer's live payment history as well.
+          const { data: customerTransactions } =
+            await supabase
+              .from("transactions")
+              .select("amount, status")
+              .eq("merchant_id", merchant.id)
+              .eq("customer_id", opportunity.customerId);
+
+          const successfulPayments =
+            (customerTransactions ?? []).filter(
+              (transaction: any) =>
+                transaction.status === "SUCCESS",
+            );
+
+          const lifetimeValue =
+            successfulPayments.reduce(
+              (sum: number, transaction: any) =>
+                sum + Number(transaction.amount ?? 0),
+              0,
+            );
+
+          await loadDashboard();
+
+          // loadDashboard may rebuild the customer list from the dashboard
+          // response, so apply the just-verified customer's transaction
+          // totals after that refresh as the final source of truth.
+          setCustomers((current) =>
+            current.map((item) =>
+              item.id === opportunity.customerId
+                ? {
+                    ...item,
+                    successfulPayments:
+                      successfulPayments.length,
+                    lifetimeValue,
+                  }
+                : item,
+            ),
+          );
 
           return;
         }
@@ -1288,18 +1590,9 @@ export function RecoverProvider({
           throw auditError;
         }
 
-        setOpportunities((current) =>
-          current.map((item) =>
-            item.id === opportunityId
-              ? {
-                  ...item,
-                  status: "RECOVERED",
-                }
-              : item,
-          ),
-        );
-
-        await loadActionsAndAudit(opportunities);
+        // Refresh the complete dashboard so simulation results stay in
+        // sync with metrics, actions, audit logs, and customer history.
+        await loadDashboard();
       } catch (err) {
         console.error(
           "RecoverAI verification error:",
@@ -1318,6 +1611,7 @@ export function RecoverProvider({
       merchant.id,
       customerOf,
       loadActionsAndAudit,
+      loadDashboard,
     ],
   );
 
@@ -1343,6 +1637,12 @@ export function RecoverProvider({
       rejectRecovery,
       executeRecovery,
       verifyRecovery,
+      sendRecoveryMessage,
+
+      authenticated: Boolean(session),
+      authLoading,
+      signIn,
+      signOut,
 
       resetDemo,
 
@@ -1370,6 +1670,11 @@ export function RecoverProvider({
       rejectRecovery,
       executeRecovery,
       verifyRecovery,
+      sendRecoveryMessage,
+      session,
+      authLoading,
+      signIn,
+      signOut,
       resetDemo,
     ],
   );
@@ -1378,8 +1683,218 @@ export function RecoverProvider({
     <RecoverContext.Provider
       value={value}
     >
-      {children}
+      {authLoading ? (
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Checking your RecoverAI session…
+          </div>
+        </div>
+      ) : session ? (
+        children
+      ) : (
+        <RecoverLoginScreen
+          onSignIn={signIn}
+          authError={authError}
+        />
+      )}
     </RecoverContext.Provider>
+  );
+}
+
+function RecoverLoginScreen({
+  onSignIn,
+  authError,
+}: {
+  onSignIn: (
+    email: string,
+    password: string,
+  ) => Promise<void>;
+  authError: string | null;
+}) {
+  const [email, setEmail] =
+    useState("demo@recoverai.dev");
+  const [password, setPassword] =
+    useState("");
+  const [submitting, setSubmitting] =
+    useState(false);
+  const [localError, setLocalError] =
+    useState<string | null>(null);
+
+  const handleSubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    setLocalError(null);
+
+    if (!email.trim() || !password) {
+      setLocalError(
+        "Enter your email and password to continue.",
+      );
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      await onSignIn(email, password);
+    } catch (err) {
+      setLocalError(
+        err instanceof Error
+          ? err.message
+          : "Unable to sign in.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-background">
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl items-center px-6 py-12">
+        <div className="grid w-full overflow-hidden rounded-2xl border border-border bg-surface shadow-sm lg:grid-cols-[1.05fr_0.95fr]">
+          <div className="hidden border-r border-border bg-muted/40 p-10 lg:flex lg:flex-col lg:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                  <Zap className="size-4" />
+                </span>
+                <span className="text-base font-semibold tracking-tight">
+                  RecoverAI
+                </span>
+              </div>
+
+              <div className="mt-20 max-w-md">
+                <p className="text-sm font-medium text-primary">
+                  Autonomous revenue recovery
+                </p>
+                <h1 className="mt-3 text-4xl font-semibold tracking-tight text-foreground">
+                  Turn failed payments into recovered revenue.
+                </h1>
+                <p className="mt-4 text-sm leading-6 text-muted-foreground">
+                  RecoverAI finds revenue at risk, explains why it
+                  happened, recommends the safest action, and keeps
+                  every execution behind a merchant approval boundary.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="size-1.5 rounded-full bg-emerald-500" />
+              Secure merchant workspace
+              <ArrowRight className="ml-1 size-3.5" />
+              Approval-gated recovery
+            </div>
+          </div>
+
+          <div className="flex items-center justify-center p-6 sm:p-10">
+            <div className="w-full max-w-md">
+              <div className="mb-8 lg:hidden">
+                <div className="flex items-center gap-2">
+                  <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                    <Zap className="size-4" />
+                  </span>
+                  <span className="text-base font-semibold tracking-tight">
+                    RecoverAI
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <LogIn className="size-5" />
+                </div>
+                <h2 className="mt-5 text-2xl font-semibold tracking-tight">
+                  Welcome back
+                </h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Sign in to your merchant workspace.
+                </p>
+              </div>
+
+              <form
+                onSubmit={handleSubmit}
+                className="mt-8 space-y-5"
+              >
+                <div>
+                  <label
+                    htmlFor="recoverai-email"
+                    className="mb-2 block text-sm font-medium"
+                  >
+                    Email
+                  </label>
+                  <input
+                    id="recoverai-email"
+                    type="email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(event) =>
+                      setEmail(event.target.value)
+                    }
+                    className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    placeholder="you@company.com"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="recoverai-password"
+                    className="mb-2 block text-sm font-medium"
+                  >
+                    Password
+                  </label>
+                  <input
+                    id="recoverai-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) =>
+                      setPassword(event.target.value)
+                    }
+                    className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    placeholder="Enter your password"
+                  />
+                </div>
+
+                {(localError || authError) && (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                    {localError ?? authError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Signing in…
+                    </>
+                  ) : (
+                    <>
+                      Sign in
+                      <ArrowRight className="size-4" />
+                    </>
+                  )}
+                </button>
+              </form>
+
+              <div className="mt-6 rounded-lg border border-border bg-muted/40 p-3.5">
+                <p className="text-xs font-medium text-foreground">
+                  Demo workspace
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Use the pre-filled demo email with the demo password
+                  configured for your RecoverAI environment.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

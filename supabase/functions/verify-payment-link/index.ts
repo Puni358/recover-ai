@@ -334,7 +334,70 @@ Deno.serve(async (req) => {
     }
 
     /*
-     * 9. Mark opportunity as recovered.
+     * 9. Record the successful payment as a transaction.
+     *
+     * This keeps customer history/LTV consistent with the verified
+     * Razorpay payment. The insert is idempotent so repeated verification
+     * calls cannot inflate revenue or lifetime value.
+     */
+    const razorpayPaymentId =
+      razorpayData?.payments?.[0]?.payment_id ?? null;
+    const razorpayPaymentLinkId =
+      razorpayData.id ?? recoveryAction.external_reference;
+
+    let existingTransaction: { id: string } | null = null;
+
+    if (razorpayPaymentId) {
+      const { data, error: transactionLookupError } = await supabase
+        .from("transactions")
+        .select("id")
+        .eq("merchant_id", merchant.id)
+        .eq("razorpay_payment_id", razorpayPaymentId)
+        .maybeSingle();
+
+      if (transactionLookupError) {
+        throw transactionLookupError;
+      }
+
+      existingTransaction = data;
+    } else {
+      const { data, error: transactionLookupError } = await supabase
+        .from("transactions")
+        .select("id")
+        .eq("merchant_id", merchant.id)
+        .eq("razorpay_order_id", razorpayPaymentLinkId)
+        .maybeSingle();
+
+      if (transactionLookupError) {
+        throw transactionLookupError;
+      }
+
+      existingTransaction = data;
+    }
+
+    if (!existingTransaction) {
+      const { error: transactionInsertError } = await supabase
+        .from("transactions")
+        .insert({
+          merchant_id: merchant.id,
+          customer_id: opportunity.customer_id,
+          amount: amountPaid,
+          currency: merchant.currency,
+          status: "SUCCESS",
+          razorpay_payment_id: razorpayPaymentId,
+          razorpay_order_id: razorpayPaymentLinkId,
+          payment_method:
+            razorpayData?.payments?.[0]?.method ?? null,
+          created_at: new Date().toISOString(),
+        });
+
+      if (transactionInsertError) {
+        throw transactionInsertError;
+      }
+    }
+
+    /*
+     * 10. Mark opportunity as recovered.
      */
     const {
       error: opportunityUpdateError,
@@ -351,7 +414,7 @@ Deno.serve(async (req) => {
     }
 
     /*
-     * 10. Append immutable audit event.
+     * 11. Append immutable audit event.
      */
     const {
       error: auditError,

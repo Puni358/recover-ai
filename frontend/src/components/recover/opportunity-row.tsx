@@ -42,6 +42,8 @@ export function OpportunityRow({
     .toUpperCase();
 
   const isRecovered = opportunity.status === "RECOVERED";
+  const hasAction =
+    opportunity.recommendedAction !== "NO_ACTION";
 
   return (
     <div
@@ -110,15 +112,28 @@ export function OpportunityRow({
       </div>
 
       <div className="lg:col-span-2">
-        <Pill
-          tone={
-            opportunity.recommendedAction === "NO_ACTION"
-              ? "neutral"
-              : "info"
-          }
-        >
-          {actionLabel[opportunity.recommendedAction]}
-        </Pill>
+        {hasAction ? (
+          <Link
+            to="/opportunities/$id"
+            params={{ id: opportunity.id }}
+            aria-label={`Review ${actionLabel[opportunity.recommendedAction]} for ${customerName}`}
+            className="inline-flex rounded-full transition-transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-primary/40"
+          >
+            <Pill
+              tone={
+                opportunity.recommendedAction === "NO_ACTION"
+                  ? "neutral"
+                  : "info"
+              }
+            >
+              {actionLabel[opportunity.recommendedAction]}
+            </Pill>
+          </Link>
+        ) : (
+          <Pill tone="neutral">
+            {actionLabel[opportunity.recommendedAction]}
+          </Pill>
+        )}
       </div>
 
       <div className="lg:col-span-2">

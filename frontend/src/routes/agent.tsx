@@ -64,6 +64,7 @@ function AgentPage() {
     metrics,
     audit,
     customerOf,
+    sendRecoveryMessage,
   } = ctx;
 
   const [messages, setMessages] = useState<Message[]>([
@@ -78,6 +79,8 @@ function AgentPage() {
   const [input, setInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSendingRecoveryMessage, setIsSendingRecoveryMessage] =
+    useState(false);
 
   const counter = useRef(1);
 
@@ -112,6 +115,37 @@ function AgentPage() {
     ? customerOf(topOpportunity.customerId)
     : undefined;
 
+  async function handleSendRecoveryMessage() {
+    if (!topOpportunity || isSendingRecoveryMessage) return;
+
+    setError(null);
+    setIsSendingRecoveryMessage(true);
+
+    try {
+      await sendRecoveryMessage(topOpportunity.id);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: counter.current++,
+          role: "agent",
+          text: `Recovery message sent to ${
+            topCustomer?.name ?? "the customer"
+          } through the RecoverAI demo channel. The action is recorded in the audit trail; revenue remains unverified until the customer completes payment.`,
+        },
+      ]);
+    } catch (err) {
+      console.error("RecoverAI recovery message error:", err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to send the recovery message.",
+      );
+    } finally {
+      setIsSendingRecoveryMessage(false);
+    }
+  }
+
   /*
    * Clean the activity feed for presentation.
    *
@@ -142,6 +176,7 @@ function AgentPage() {
           "RECOVERY_EXECUTING",
           "RECOVERY_VERIFIED",
           "RECOVERY_REJECTED",
+          "RECOVERY_MESSAGE_SENT",
         ].includes(event.event);
       })
       .filter((event) => {
@@ -566,6 +601,30 @@ function AgentPage() {
                       </p>
                     </div>
                   )}
+
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleSendRecoveryMessage()}
+                      disabled={isSendingRecoveryMessage}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isSendingRecoveryMessage ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Zap className="h-4 w-4" />
+                      )}
+                      {isSendingRecoveryMessage
+                        ? "Sending recovery message…"
+                        : "Send Recovery Message"}
+                    </button>
+
+                    <p className="text-[11px] leading-5 text-muted-foreground">
+                      Sends a merchant-approved message through the RecoverAI
+                      demo channel and records the action. It does not claim
+                      payment recovery until payment is verified.
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">
@@ -638,7 +697,9 @@ function ActivityItem({
           ? "Recovery verified"
           : event.event === "RECOVERY_REJECTED"
             ? "Recovery rejected"
-            : event.event;
+            : event.event === "RECOVERY_MESSAGE_SENT"
+              ? "Recovery message sent"
+              : event.event;
 
   const isVerified =
     event.event === "RECOVERY_VERIFIED";

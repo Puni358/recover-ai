@@ -1,8 +1,10 @@
 import { Link } from "@tanstack/react-router";
+import { useState } from "react";
 import {
   Bot,
   ChevronDown,
   LayoutDashboard,
+  LogOut,
   ScrollText,
   Target,
   Zap,
@@ -21,7 +23,8 @@ const nav = [
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { merchant, metrics } = useRecover();
+  const { merchant, metrics, signOut } = useRecover();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-background">
@@ -38,13 +41,46 @@ export function AppShell({ children }: { children: ReactNode }) {
 
           <div className="ml-auto flex items-center gap-3">
             <AgentStatusBadge />
-            <button className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm transition-colors hover:bg-accent">
-              <span className="flex size-6 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground">
-                NR
-              </span>
-              <span className="hidden sm:inline">Ops</span>
-              <ChevronDown className="size-3.5 text-muted-foreground" />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((open) => !open)}
+                className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+              >
+                <span className="flex size-6 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground">
+                  NR
+                </span>
+                <span className="hidden sm:inline">Ops</span>
+                <ChevronDown className="size-3.5 text-muted-foreground" />
+              </button>
+
+              {menuOpen && (
+                <div className="absolute right-0 top-full z-50 mt-2 w-48 rounded-lg border border-border bg-surface p-1.5 shadow-lg">
+                  <div className="px-2.5 py-2">
+                    <p className="text-xs font-medium text-foreground">
+                      Merchant workspace
+                    </p>
+                    <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                      {merchant.name}
+                    </p>
+                  </div>
+
+                  <div className="my-1 border-t border-border" />
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void signOut();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <LogOut className="size-3.5" />
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>

@@ -74,6 +74,7 @@ function OpportunityDetail() {
     verifyRecovery,
     actions,
     merchant,
+    loading,
   } = useRecover();
 
   const opportunity = getOpportunity(id);
@@ -83,17 +84,12 @@ function OpportunityDetail() {
   >(null);
 
   /*
-   * These refs make the workflow one-shot.
-   *
-   * The important distinction is:
-   * - APPROVED may execute only once for this approval.
-   * - EXECUTING may verify only once for this execution.
-   *
-   * A dashboard refresh/re-render must NOT restart either step.
+   * Execution is one-shot. Verification is intentionally NOT one-shot: the
+   * Razorpay payment can finish in another browser tab, so EXECUTING state
+   * is verified repeatedly until Razorpay confirms the payment.
    */
   const executionStartedRef = useRef(false);
-  const verificationStartedRef = useRef(false);
-
+  const verificationInFlightRef = useRef(false);
   const status = opportunity?.status;
   const opportunityId = opportunity?.id;
 
@@ -135,8 +131,16 @@ function OpportunityDetail() {
     executionStartedRef.current = true;
     setBusy("executing");
 
-    const timer = setTimeout(() => {
-      executeRecovery(opportunityId);
+    const timer = setTimeout(async () => {
+      try {
+        await executeRecovery(opportunityId);
+      } finally {
+        // Execution has finished once the payment link has been
+        // created (or the execution failed). From this point the
+        // page must show the payment-link controls instead of
+        // remaining stuck on “Executing recovery…”.
+        setBusy(null);
+      }
     }, 1100);
 
     return () => clearTimeout(timer);
@@ -145,31 +149,71 @@ function OpportunityDetail() {
   /*
    * EXECUTE -> VERIFY
    *
-   * Verification starts only once after the opportunity actually
-   * enters EXECUTING state.
+   * Razorpay opens in a separate tab, so the merchant may complete
+   * payment while this page is still open. Poll the verified backend
+   * state while EXECUTING and also verify immediately when the merchant
+   * returns to this tab. This keeps the demo live without manual refreshes.
    */
   useEffect(() => {
     if (
       status !== "EXECUTING" ||
       !opportunityId ||
-      verificationStartedRef.current
+      !paymentLinkUrl
     ) {
       return;
     }
 
-    verificationStartedRef.current = true;
-    setBusy("verifying");
+    let cancelled = false;
 
-    const timer = setTimeout(async () => {
+    const verifyInBackground = async () => {
+      if (cancelled || verificationInFlightRef.current) return;
+
+      verificationInFlightRef.current = true;
+
       try {
         await verifyRecovery(opportunityId);
+      } catch (error) {
+        console.error(
+          "RecoverAI background verification error:",
+          error,
+        );
       } finally {
-        setBusy(null);
+        verificationInFlightRef.current = false;
       }
-    }, 1400);
+    };
 
-    return () => clearTimeout(timer);
-  }, [status, opportunityId, verifyRecovery]);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void verifyInBackground();
+      }
+    };
+
+    // Check as soon as the payment tab is closed/switched away from.
+    void verifyInBackground();
+
+    const interval = window.setInterval(() => {
+      void verifyInBackground();
+    }, 2500);
+
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibilityChange,
+    );
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibilityChange,
+      );
+    };
+  }, [
+    status,
+    opportunityId,
+    paymentLinkUrl,
+    verifyRecovery,
+  ]);
 
   /*
    * Reset workflow guards when the opportunity moves back to a
@@ -189,7 +233,6 @@ function OpportunityDetail() {
       status === "REJECTED"
     ) {
       executionStartedRef.current = false;
-      verificationStartedRef.current = false;
       setBusy(null);
     }
   }, [status]);
@@ -198,7 +241,9 @@ function OpportunityDetail() {
     return (
       <AppShell>
         <p className="text-sm text-muted-foreground">
-          Opportunity not found.
+          {loading
+            ? "Syncing opportunity data…"
+            : "Opportunity not found."}
         </p>
       </AppShell>
     );
