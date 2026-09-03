@@ -1,5 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, CreditCard, RefreshCw, ShoppingCart } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  CreditCard,
+  RefreshCw,
+  ShoppingCart,
+} from "lucide-react";
 
 import { Pill, OpportunityStatusBadge } from "./status-badge";
 import { ProbabilityBar } from "./probability";
@@ -35,26 +41,46 @@ export function OpportunityRow({
     .slice(0, 2)
     .toUpperCase();
 
+  const isRecovered = opportunity.status === "RECOVERED";
+
   return (
-    <div className="group grid grid-cols-1 gap-4 border-b border-border px-5 py-4 transition-colors last:border-b-0 hover:bg-accent/50 lg:grid-cols-12 lg:items-center lg:gap-3">
+    <div
+      className={[
+        "group grid grid-cols-1 gap-4 border-b border-border px-5 py-4 transition-colors last:border-b-0",
+        "hover:bg-accent/40",
+        "lg:grid-cols-12 lg:items-center lg:gap-3",
+        isRecovered ? "bg-muted/10" : "",
+      ].join(" ")}
+    >
       <div className="flex items-center gap-3 lg:col-span-3">
         <span className="tabular flex size-9 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-xs font-medium text-muted-foreground">
           {initials || "?"}
         </span>
 
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium">
-            {customerName}
+          <div className="flex items-center gap-1.5">
+            <div className="truncate text-sm font-medium">
+              {customerName}
+            </div>
+
+            {isRecovered && (
+              <CheckCircle2 className="size-3.5 shrink-0 text-primary" />
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Icon className="size-3" />
 
-            {opportunityTypeLabel[opportunity.opportunityType]}
+            <span>
+              {opportunityTypeLabel[opportunity.opportunityType]}
+            </span>
 
-            {opportunity.paymentMethod
-              ? ` · ${opportunity.paymentMethod}`
-              : ""}
+            {opportunity.paymentMethod && (
+              <>
+                <span>·</span>
+                <span>{opportunity.paymentMethod}</span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -64,12 +90,22 @@ export function OpportunityRow({
           {inr(opportunity.amount)}
         </div>
 
-        <div className="truncate text-xs text-muted-foreground">
+        <div className="mt-0.5 truncate text-xs text-muted-foreground">
           {opportunity.failureReason ?? "Checkout not completed"}
         </div>
       </div>
 
       <div className="lg:col-span-2">
+        <div className="mb-1 flex items-center justify-between text-[11px]">
+          <span className="text-muted-foreground">
+            Probability
+          </span>
+
+          <span className="tabular font-semibold">
+            {opportunity.recoveryProbability}%
+          </span>
+        </div>
+
         <ProbabilityBar value={opportunity.recoveryProbability} />
       </div>
 
