@@ -253,6 +253,66 @@ Deno.serve(async (req) => {
     }
 
     // ========================================================
+    // LOAD CUSTOMER TRANSACTION HISTORY
+    // ========================================================
+
+    let customerTransactions: any[] = [];
+
+    if (customerIds.length > 0) {
+      const {
+        data,
+        error: customerTransactionsError,
+      } = await supabase
+        .from("transactions")
+        .select(`
+          id,
+          customer_id,
+          amount,
+          status,
+          payment_method,
+          created_at
+        `)
+        .in("customer_id", customerIds);
+
+      if (customerTransactionsError) {
+        throw new Error(
+          `Customer transactions query failed: ${customerTransactionsError.message}`
+        );
+      }
+
+      customerTransactions = data ?? [];
+    }
+
+    // Enrich customers with transaction history used by
+    // the Opportunity Detail page.
+    customers = customers.map((customer) => {
+      const transactions = customerTransactions.filter(
+        (transaction) =>
+          transaction.customer_id === customer.id
+      );
+
+      const successfulTransactions =
+        transactions.filter(
+          (transaction) =>
+            transaction.status === "SUCCESS"
+        );
+
+      const lifetimeValue =
+        successfulTransactions.reduce(
+          (sum, transaction) =>
+            sum + Number(transaction.amount),
+          0
+        );
+
+      return {
+        ...customer,
+        successfulPayments:
+          successfulTransactions.length,
+        lifetimeValue,
+      };
+    });
+
+    // ========================================================
     // LOAD AI ANALYSES
     // ========================================================
 
