@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-router";
 import {
   ArrowLeft,
+  ArrowUpRight,
   BadgeCheck,
   Check,
   Loader2,
@@ -71,6 +72,7 @@ function OpportunityDetail() {
     rejectRecovery,
     executeRecovery,
     verifyRecovery,
+    actions,
     merchant,
   } = useRecover();
 
@@ -94,6 +96,26 @@ function OpportunityDetail() {
 
   const status = opportunity?.status;
   const opportunityId = opportunity?.id;
+
+  const latestPaymentLinkAction =
+    opportunity
+      ? [...actions]
+          .filter(
+            (action) =>
+              action.opportunityId === opportunity.id &&
+              action.action === "CREATE_PAYMENT_LINK",
+          )
+          .sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() -
+              new Date(a.createdAt).getTime(),
+          )[0]
+      : undefined;
+
+  const paymentLinkUrl =
+    latestPaymentLinkAction?.result?.match(
+      /https:\/\/rzp\.io\/[^\s]+/,
+    )?.[0];
 
   /*
    * APPROVE -> EXECUTE
@@ -138,9 +160,12 @@ function OpportunityDetail() {
     verificationStartedRef.current = true;
     setBusy("verifying");
 
-    const timer = setTimeout(() => {
-      verifyRecovery(opportunityId);
-      setBusy(null);
+    const timer = setTimeout(async () => {
+      try {
+        await verifyRecovery(opportunityId);
+      } finally {
+        setBusy(null);
+      }
     }, 1400);
 
     return () => clearTimeout(timer);
@@ -204,7 +229,7 @@ function OpportunityDetail() {
 
   const inFlight =
     opportunity.status === "APPROVED" ||
-    opportunity.status === "EXECUTING";
+    (opportunity.status === "EXECUTING" && busy !== null);
 
   return (
     <AppShell>
@@ -377,11 +402,44 @@ function OpportunityDetail() {
             <div className="mt-4 flex items-center justify-center gap-2 rounded-lg border border-border bg-muted p-4 text-sm">
               <Loader2 className="size-4 animate-spin text-muted-foreground" />
 
-              {busy === "verifying" ||
-              opportunity.status ===
-                "EXECUTING"
+              {busy === "verifying"
                 ? "Verifying recovery…"
                 : "Executing recovery…"}
+            </div>
+          ) : opportunity.status === "EXECUTING" ? (
+            <div className="mt-4 space-y-2">
+              {paymentLinkUrl ? (
+                <a
+                  href={paymentLinkUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full items-center justify-center gap-2 rounded-md border border-primary bg-primary/5 px-4 py-2.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
+                >
+                  Open Payment Link
+                  <ArrowUpRight className="size-4" />
+                </a>
+              ) : (
+                <div className="rounded-md border border-border bg-muted p-3 text-center text-xs text-muted-foreground">
+                  Payment link is being prepared…
+                </div>
+              )}
+
+              <button
+                onClick={() => {
+                  setBusy("verifying");
+                  void verifyRecovery(opportunity.id).finally(() => {
+                    setBusy(null);
+                  });
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+              >
+                <ShieldCheck className="size-4" />
+                Verify Payment
+              </button>
+
+              <p className="text-center text-xs text-muted-foreground">
+                Complete the Razorpay test payment first, then verify the recovery.
+              </p>
             </div>
           ) : (
             <div className="mt-4 space-y-2">

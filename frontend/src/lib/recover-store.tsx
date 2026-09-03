@@ -264,14 +264,15 @@ function mapRecoveryAction(
     status:
       item.status ?? "PENDING_APPROVAL",
     executionMode:
-      item.execution_mode ?? "SIMULATION",
-    createdAt:
-      item.created_at ??
-      new Date().toISOString(),
-    result:
-      item.result_message ??
-      item.result ??
-      undefined,
+  item.execution_mode ?? "SIMULATION",
+createdAt:
+  item.created_at ?? new Date().toISOString(),
+externalReference:
+  item.external_reference ?? undefined,
+result:
+  item.result_message ??
+  item.result ??
+  undefined,
   };
 }
 
@@ -926,20 +927,17 @@ export function RecoverProvider({
    * Currently safe simulation.
    * Razorpay Test Mode will be connected later.
    */
-  const executeRecovery = useCallback(
+    const executeRecovery = useCallback(
     async (opportunityId: string) => {
-      const opportunity =
-        opportunities.find(
-          (item) =>
-            item.id === opportunityId,
-        );
+      const opportunity = opportunities.find(
+        (item) => item.id === opportunityId,
+      );
 
       if (!opportunity) return;
 
-      const customer =
-        customerOf(
-          opportunity.customerId,
-        );
+      const customer = customerOf(
+        opportunity.customerId,
+      );
 
       setOpportunities((current) =>
         current.map((item) =>
@@ -956,23 +954,7 @@ export function RecoverProvider({
 
       try {
         /*
-         * 1. Update opportunity.
-         */
-        const {
-          error: opportunityError,
-        } = await supabase
-          .from("opportunities")
-          .update({
-            status: "EXECUTING",
-          })
-          .eq("id", opportunityId);
-
-        if (opportunityError) {
-          throw opportunityError;
-        }
-
-        /*
-         * 2. Find the latest recovery action.
+         * 1. Find the latest recovery action.
          */
         const {
           data: actionData,
@@ -980,10 +962,7 @@ export function RecoverProvider({
         } = await supabase
           .from("recovery_actions")
           .select("*")
-          .eq(
-            "opportunity_id",
-            opportunityId,
-          )
+          .eq("opportunity_id", opportunityId)
           .order("created_at", {
             ascending: false,
           })
@@ -1001,7 +980,51 @@ export function RecoverProvider({
         }
 
         /*
-         * 3. Mark action executing.
+         * 2. RAZORPAY TEST MODE
+         *
+         * Creating a Payment Link is NOT proof of recovery.
+         * Leave the opportunity in EXECUTING until the
+         * merchant verifies the actual Razorpay payment.
+         */
+        if (
+          actionData.execution_mode === "RAZORPAY_TEST" &&
+          actionData.action_type === "CREATE_PAYMENT_LINK"
+        ) {
+          const {
+            data: functionData,
+            error: functionError,
+          } = await supabase.functions.invoke(
+            "create-payment-link",
+            {
+              body: {
+                opportunityId,
+                recoveryActionId: actionData.id,
+              },
+            },
+          );
+
+          if (functionError) {
+            throw functionError;
+          }
+
+          if (!functionData?.success) {
+            throw new Error(
+              functionData?.error ??
+                "Failed to create Razorpay Payment Link.",
+            );
+          }
+
+          /*
+           * Reload the action so external_reference and
+           * result_message are available immediately.
+           */
+          await loadActionsAndAudit(opportunities);
+
+          return;
+        }
+
+        /*
+         * 3. SIMULATION MODE
          */
         const {
           error: actionError,
@@ -1009,62 +1032,45 @@ export function RecoverProvider({
           .from("recovery_actions")
           .update({
             status: "EXECUTING",
-            executed_at:
-              new Date().toISOString(),
+            executed_at: new Date().toISOString(),
             result_message:
               "Recovery action executing in simulation mode",
           })
-          .eq(
-            "id",
-            actionData.id,
-          );
+          .eq("id", actionData.id);
 
         if (actionError) {
           throw actionError;
         }
 
         /*
-         * 4. Audit.
+         * 4. Audit simulation execution.
          */
-        const {
-          error: auditError,
-        } = await supabase
-          .from("audit_logs")
-          .insert({
-            merchant_id:
-              merchant.id,
-
-            opportunity_id:
-              opportunity.id,
-
-            recovery_action_id:
-              actionData.id,
-
-            event_type:
-              "RECOVERY_EXECUTING",
-
-            message:
-              "Recovery action executing in simulation mode",
-
-            metadata: {
-              actor: "RECOVERAI",
-              customer_name:
-                customer?.name ??
-                "Customer",
-              action:
-                opportunity.recommendedAction,
-              result:
-                "Simulation execution started",
-            },
-          });
+        const { error: auditError } =
+          await supabase
+            .from("audit_logs")
+            .insert({
+              merchant_id: merchant.id,
+              opportunity_id: opportunity.id,
+              recovery_action_id: actionData.id,
+              event_type: "RECOVERY_EXECUTING",
+              message:
+                "Recovery action executing in simulation mode",
+              metadata: {
+                actor: "RECOVERAI",
+                customer_name:
+                  customer?.name ?? "Customer",
+                action:
+                  opportunity.recommendedAction,
+                result:
+                  "Simulation execution started",
+              },
+            });
 
         if (auditError) {
           throw auditError;
         }
 
-        await loadActionsAndAudit(
-          opportunities,
-        );
+        await loadActionsAndAudit(opportunities);
       } catch (err) {
         console.error(
           "RecoverAI execution error:",
@@ -1076,6 +1082,20 @@ export function RecoverProvider({
             ? err.message
             : "Failed to execute recovery.",
         );
+
+        /*
+         * Roll the optimistic state back.
+         */
+        setOpportunities((current) =>
+          current.map((item) =>
+            item.id === opportunityId
+              ? {
+                  ...item,
+                  status: "APPROVED",
+                }
+              : item,
+          ),
+        );
       }
     },
     [
@@ -1085,7 +1105,6 @@ export function RecoverProvider({
       loadActionsAndAudit,
     ],
   );
-
   /*
    * VERIFY
    *
@@ -1095,75 +1114,138 @@ export function RecoverProvider({
    * Later this will verify the real Razorpay
    * payment/order state.
    */
+
   const verifyRecovery = useCallback(
     async (opportunityId: string) => {
-      const opportunity =
-        opportunities.find(
-          (item) =>
-            item.id === opportunityId,
-        );
+      const opportunity = opportunities.find(
+        (item) => item.id === opportunityId,
+      );
 
       if (!opportunity) return;
 
-      const customer =
-        customerOf(
-          opportunity.customerId,
-        );
-
-      const {
-        data: actionData,
-        error: actionLoadError,
-      } = await supabase
-        .from("recovery_actions")
-        .select("*")
-        .eq(
-          "opportunity_id",
-          opportunityId,
-        )
-        .order("created_at", {
-          ascending: false,
-        })
-        .limit(1)
-        .maybeSingle();
-
-      if (actionLoadError) {
-        console.error(
-          "RecoverAI action lookup error:",
-          actionLoadError,
-        );
-
-        setError(
-          actionLoadError.message,
-        );
-
-        return;
-      }
-
-      if (!actionData) {
-        setError(
-          "No recovery action found to verify.",
-        );
-
-        return;
-      }
-
-      setOpportunities((current) =>
-        current.map((item) =>
-          item.id === opportunityId
-            ? {
-                ...item,
-                status: "RECOVERED",
-              }
-            : item,
-        ),
+      const customer = customerOf(
+        opportunity.customerId,
       );
 
       setError(null);
 
       try {
         /*
-         * 1. Mark opportunity recovered.
+         * Find the latest recovery action.
          */
+        const {
+          data: actionData,
+          error: actionLoadError,
+        } = await supabase
+          .from("recovery_actions")
+          .select("*")
+          .eq("opportunity_id", opportunityId)
+          .order("created_at", {
+            ascending: false,
+          })
+          .limit(1)
+          .maybeSingle();
+
+        if (actionLoadError) {
+          throw actionLoadError;
+        }
+
+        if (!actionData) {
+          throw new Error(
+            "No recovery action exists for this opportunity.",
+          );
+        }
+
+        /*
+         * RAZORPAY TEST MODE
+         *
+         * Verification must come from Razorpay.
+         * A Payment Link existing is NOT proof of recovery.
+         */
+        if (
+          actionData.execution_mode === "RAZORPAY_TEST" &&
+          actionData.action_type === "CREATE_PAYMENT_LINK"
+        ) {
+          const {
+            data: functionData,
+            error: functionError,
+          } = await supabase.functions.invoke(
+            "verify-payment-link",
+            {
+              body: {
+                opportunityId,
+                recoveryActionId: actionData.id,
+              },
+            },
+          );
+
+          if (functionError) {
+            throw functionError;
+          }
+
+          if (!functionData?.success) {
+            throw new Error(
+              functionData?.error ??
+                "Failed to verify Razorpay payment.",
+            );
+          }
+
+          /*
+           * Payment is NOT necessarily complete.
+           *
+           * The Edge Function returns recovered:false
+           * when the Payment Link has not been paid yet.
+           */
+          if (!functionData.recovered) {
+            await loadActionsAndAudit(opportunities);
+
+            setError(
+              "Payment has not been completed yet. Complete the Razorpay test payment and verify again.",
+            );
+
+            return;
+          }
+
+          /*
+           * Genuine Razorpay recovery.
+           */
+          setOpportunities((current) =>
+            current.map((item) =>
+              item.id === opportunityId
+                ? {
+                    ...item,
+                    status: "RECOVERED",
+                  }
+                : item,
+            ),
+          );
+
+          await loadActionsAndAudit(opportunities);
+
+          return;
+        }
+
+        /*
+         * SIMULATION MODE
+         *
+         * Simulation is still allowed to complete locally.
+         */
+        const {
+          error: actionError,
+        } = await supabase
+          .from("recovery_actions")
+          .update({
+            status: "VERIFIED",
+            verified_at: new Date().toISOString(),
+            result_message:
+              "Recovery verified successfully in simulation mode",
+          })
+          .eq("id", actionData.id);
+
+        if (actionError) {
+          throw actionError;
+        }
+
         const {
           error: opportunityError,
         } = await supabase
@@ -1178,67 +1260,27 @@ export function RecoverProvider({
         }
 
         /*
-         * 2. Mark recovery action verified.
-         */
-        const recoveredMessage =
-          `₹${opportunity.amount.toLocaleString(
-            "en-IN",
-          )} recovered successfully in simulation`;
-
-        const {
-          error: actionError,
-        } = await supabase
-          .from("recovery_actions")
-          .update({
-            status: "VERIFIED",
-
-            verified_at:
-              new Date().toISOString(),
-
-            result_message:
-              recoveredMessage,
-          })
-          .eq(
-            "id",
-            actionData.id,
-          );
-
-        if (actionError) {
-          throw actionError;
-        }
-
-        /*
-         * 3. Audit recovery.
+         * Audit simulation verification.
          */
         const {
           error: auditError,
         } = await supabase
           .from("audit_logs")
           .insert({
-            merchant_id:
-              merchant.id,
-
-            opportunity_id:
-              opportunity.id,
-
-            recovery_action_id:
-              actionData.id,
-
-            event_type:
-              "RECOVERY_VERIFIED",
-
+            merchant_id: merchant.id,
+            opportunity_id: opportunity.id,
+            recovery_action_id: actionData.id,
+            event_type: "RECOVERY_VERIFIED",
             message:
-              recoveredMessage,
-
+              "Recovery verified successfully in simulation mode.",
             metadata: {
               actor: "RECOVERAI",
               customer_name:
-                customer?.name ??
-                "Customer",
+                customer?.name ?? "Customer",
               action:
                 opportunity.recommendedAction,
               result:
-                recoveredMessage,
+                "Simulation recovery verified",
             },
           });
 
@@ -1246,11 +1288,18 @@ export function RecoverProvider({
           throw auditError;
         }
 
-        /*
-         * 4. Reload everything so dashboard
-         * metrics update immediately.
-         */
-        await loadDashboard();
+        setOpportunities((current) =>
+          current.map((item) =>
+            item.id === opportunityId
+              ? {
+                  ...item,
+                  status: "RECOVERED",
+                }
+              : item,
+          ),
+        );
+
+        await loadActionsAndAudit(opportunities);
       } catch (err) {
         console.error(
           "RecoverAI verification error:",
@@ -1268,11 +1317,11 @@ export function RecoverProvider({
       opportunities,
       merchant.id,
       customerOf,
-      loadDashboard,
+      loadActionsAndAudit,
     ],
   );
 
-  const resetDemo = useCallback(() => {
+    const resetDemo = useCallback(() => {
     void loadDashboard();
   }, [loadDashboard]);
 

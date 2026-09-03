@@ -85,7 +85,7 @@ Deno.serve(async (req) => {
       error: merchantError,
     } = await supabase
       .from("merchants")
-      .select("id, name, email, currency")
+      .select("id, name, email, currency, execution_mode")
       .eq("user_id", user.id)
       .single();
 

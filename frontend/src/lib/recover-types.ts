@@ -1,4 +1,7 @@
-export type OpportunityType = "FAILED_PAYMENT" | "ABANDONED_CHECKOUT" | "FAILED_SUBSCRIPTION";
+export type OpportunityType =
+  | "FAILED_PAYMENT"
+  | "ABANDONED_CHECKOUT"
+  | "FAILED_SUBSCRIPTION";
 
 export type RecommendedAction =
   | "RETRY_PAYMENT"
@@ -23,7 +26,9 @@ export type ActionStatus =
   | "FAILED"
   | "VERIFIED";
 
-export type ExecutionMode = "SIMULATION" | "RAZORPAY_TEST";
+export type ExecutionMode =
+  | "SIMULATION"
+  | "RAZORPAY_TEST";
 
 export interface Customer {
   id: string;
@@ -57,6 +62,7 @@ export interface RecoveryAction {
   status: ActionStatus;
   executionMode: ExecutionMode;
   createdAt: string;
+  externalReference?: string;
   result?: string;
 }
 
