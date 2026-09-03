@@ -482,7 +482,7 @@ function AgentPage() {
                 </span>
 
                 <span>
-                  {opportunities.length} opportunities ·{" "}
+                  {metrics.openCount} active opportunities ·{" "}
                   {inr(metrics.revenueAtRisk)} at risk
                 </span>
               </div>
