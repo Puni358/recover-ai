@@ -162,6 +162,9 @@ Deno.serve(async (req) => {
         "ANALYZING",
         "RECOMMENDED",
         "APPROVED",
+        "EXECUTING",
+        "RECOVERED",
+        "REJECTED",
       ])
       .order("created_at", {
         ascending: false,
