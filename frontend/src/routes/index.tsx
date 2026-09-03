@@ -28,7 +28,10 @@ export const Route = createFileRoute("/")({
         content:
           "RecoverAI finds failed payments, abandoned checkouts and failed subscriptions, then recovers the revenue with merchant-approved actions.",
       },
-      { property: "og:title", content: "Overview — RecoverAI Revenue Recovery" },
+      {
+        property: "og:title",
+        content: "Overview — RecoverAI Revenue Recovery",
+      },
       {
         property: "og:description",
         content:
@@ -39,15 +42,37 @@ export const Route = createFileRoute("/")({
   component: Overview,
 });
 
+function getISTGreeting(): string {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-IN", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      hour12: false,
+    }).format(new Date()),
+  );
+
+  if (hour < 12) {
+    return "Good morning";
+  }
+
+  if (hour < 17) {
+    return "Good afternoon";
+  }
+
+  return "Good evening";
+}
+
 function Overview() {
   const { metrics, opportunities, customerOf } = useRecover();
+
+  const greeting = getISTGreeting();
 
   return (
     <AppShell>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Good evening 👋
+            {greeting} 👋
           </h1>
 
           <p className="mt-1 text-sm text-muted-foreground">
