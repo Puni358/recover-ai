@@ -337,11 +337,19 @@ Deno.serve(async (req) => {
     // ========================================================
 
     const revenueAtRisk =
-      enrichedOpportunities.reduce(
-        (sum, opportunity) =>
-          sum + Number(opportunity.amount),
-        0
-      );
+  enrichedOpportunities.reduce(
+    (sum, opportunity) => {
+      if (
+        opportunity.status === "RECOVERED" ||
+        opportunity.status === "REJECTED"
+      ) {
+        return sum;
+      }
+
+      return sum + Number(opportunity.amount);
+    },
+    0
+  );
 
     // ========================================================
     // RECOVERED REVENUE
@@ -372,31 +380,24 @@ Deno.serve(async (req) => {
     const recoveredCount =
       recoveredOpportunities?.length ?? 0;
 
-    // ========================================================
-    // TOTAL OPPORTUNITIES
-    // ========================================================
+// ========================================================
+// OPPORTUNITY COUNTS
+// ========================================================
 
-    const {
-      count: opportunityCount,
-      error: countError,
-    } = await supabase
-      .from("opportunities")
-      .select("*", {
-        count: "exact",
-        head: true,
-      })
-      .eq("merchant_id", merchantId);
+const totalOpportunityCount =
+  enrichedOpportunities.length;
 
-    if (countError) {
-      throw new Error(
-        `Opportunity count failed: ${countError.message}`
-      );
-    }
+const activeOpportunityCount =
+  enrichedOpportunities.filter(
+    (opportunity) =>
+      opportunity.status !== "RECOVERED" &&
+      opportunity.status !== "REJECTED"
+  ).length;
 
-    const recoveryRate =
-      opportunityCount && opportunityCount > 0
-        ? (recoveredCount / opportunityCount) * 100
-        : 0;
+const recoveryRate =
+  totalOpportunityCount > 0
+    ? (recoveredCount / totalOpportunityCount) * 100
+    : 0;
 
     // ========================================================
     // FINAL RESPONSE
@@ -411,7 +412,7 @@ Deno.serve(async (req) => {
           revenueAtRisk,
           recoveredRevenue,
           opportunityCount:
-            opportunityCount ?? 0,
+  activeOpportunityCount,
           recoveredCount,
           recoveryRate: Number(
             recoveryRate.toFixed(1)
