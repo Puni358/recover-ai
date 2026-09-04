@@ -5,3 +5,5 @@ Email: demo@recoverai.dev
 
 
 Password: RecoverAI@2026!
+
+to run locally cd frontend and do npm run build and npm run dev
