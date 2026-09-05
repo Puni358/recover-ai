@@ -126,12 +126,12 @@ Deno.serve(async (req) => {
       );
     }
 
-    const totalRevenue =
-      successfulTransactions?.reduce(
-        (sum, transaction) =>
-          sum + Number(transaction.amount),
-        0
-      ) ?? 0;
+    const processedRevenue =
+  successfulTransactions?.reduce(
+    (sum, transaction) =>
+      sum + Number(transaction.amount),
+    0
+  ) ?? 0;
 
     // ========================================================
     // OPEN OPPORTUNITIES
@@ -437,7 +437,10 @@ Deno.serve(async (req) => {
         0
       ) ?? 0;
 
-    const recoveredCount =
+const totalRevenue =
+  processedRevenue + recoveredRevenue;    
+
+const recoveredCount =
       recoveredOpportunities?.length ?? 0;
 
 // ========================================================
@@ -455,8 +458,8 @@ const activeOpportunityCount =
   ).length;
 
 const recoveryRate =
-  totalOpportunityCount > 0
-    ? (recoveredCount / totalOpportunityCount) * 100
+  recoveredRevenue + revenueAtRisk > 0
+    ? (recoveredRevenue / (recoveredRevenue + revenueAtRisk)) * 100
     : 0;
 
     // ========================================================
